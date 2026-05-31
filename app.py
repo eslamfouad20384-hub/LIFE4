@@ -1,18 +1,15 @@
 import streamlit as st
-import pandas as pd
-
 from crypto_intraday_engine import run_engine
 
-st.set_page_config(page_title="Crypto Intraday Engine", layout="wide")
+st.set_page_config(page_title="Crypto Engine", layout="wide")
 
-st.title("🚀 Crypto Intraday Engine (Hybrid Free Stack)")
+st.title("🚀 Crypto Intraday Engine (Stable Version)")
 
-st.write("📊 Scanning Market... 1H Intraday Signals")
-
+st.write("Scanning market using CoinGecko + CryptoCompare OHLC")
 
 if st.button("🔥 Run Scan"):
 
-    with st.spinner("Analyzing market..."):
+    with st.spinner("Working..."):
 
         df = run_engine()
 
@@ -20,5 +17,4 @@ if st.button("🔥 Run Scan"):
             st.warning("❌ No valid signals found")
         else:
             st.success("🔥 Signals Found")
-
             st.dataframe(df, use_container_width=True)
