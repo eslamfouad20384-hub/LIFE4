@@ -19,12 +19,16 @@ def get_market():
         "sparkline": False
     }
 
-    r = session.get(url, params=params).json()
+    r = session.get(url, timeout=10).json()
+
+    if not isinstance(r, list):
+        return pd.DataFrame()
+
     return pd.DataFrame(r)
 
 
 # =========================
-# 🟢 CRYPTOCOMPARE OHLC
+# 🟢 CRYPTOCOMPARE OHLC (FIXED SAFE VERSION)
 # =========================
 def get_ohlc(symbol):
 
@@ -36,20 +40,37 @@ def get_ohlc(symbol):
         "limit": 200
     }
 
-    r = session.get(url, params=params).json()
+    try:
+        r = session.get(url, timeout=10).json()
 
-    if "Data" not in r:
+        # 🔴 حماية كاملة من أي شكل Response مختلف
+        if not isinstance(r, dict):
+            return None
+
+        if "Data" not in r:
+            return None
+
+        if "Data" not in r["Data"]:
+            return None
+
+        data = r["Data"]["Data"]
+
+        if not isinstance(data, list) or len(data) < 50:
+            return None
+
+        df = pd.DataFrame(data)
+
+        required = ["time","open","high","low","close","volumeto"]
+
+        if not all(col in df.columns for col in required):
+            return None
+
+        df = df[required].rename(columns={"volumeto": "volume"})
+
+        return df
+
+    except:
         return None
-
-    data = r["Data"]["Data"]
-
-    df = pd.DataFrame(data)
-
-    df = df[["time","open","high","low","close","volumeto"]].rename(
-        columns={"volumeto": "volume"}
-    )
-
-    return df
 
 
 # =========================
@@ -90,9 +111,12 @@ def add_indicators(df):
 
 
 # =========================
-# 🧠 MARKET BIAS (4H logic simplified)
+# 🧠 MARKET BIAS
 # =========================
 def market_bias(df):
+
+    if len(df) < 50:
+        return "SIDEWAYS"
 
     ema50 = df["ema50"].iloc[-1]
     ema200 = df["ema200"].iloc[-1]
@@ -101,6 +125,7 @@ def market_bias(df):
         return "UP"
     elif ema50 < ema200:
         return "DOWN"
+
     return "SIDEWAYS"
 
 
@@ -108,6 +133,9 @@ def market_bias(df):
 # 📊 FILTER
 # =========================
 def filter_quality(df):
+
+    if df.empty:
+        return False
 
     if df["volume"].iloc[-1] < df["volume"].mean():
         return False
@@ -119,7 +147,7 @@ def filter_quality(df):
 
 
 # =========================
-# 🎯 SIGNAL ENGINE (BALANCED)
+# 🎯 SIGNAL ENGINE
 # =========================
 def generate_signal(df):
 
@@ -185,7 +213,7 @@ def risk_engine(df):
         "sl": sl,
         "tp1": entry + risk,
         "tp2": entry + (risk * 2),
-        "tp3": entry + (risk * 3)
+        "tp3": entry + (risk * 3),
     }
 
 
@@ -196,15 +224,19 @@ def run_engine():
 
     market = get_market()
 
+    if market.empty:
+        return pd.DataFrame()
+
     results = []
 
     for i in range(min(15, len(market))):
 
-        symbol = market.iloc[i]["symbol"].upper()
+        symbol = str(market.iloc[i].get("symbol", "")).upper()
 
         df = get_ohlc(symbol)
 
-        if df is None or len(df) < 120:
+        # 🔴 أهم Fix: تجاهل أي رمز غير مدعوم
+        if df is None or df.empty:
             continue
 
         df = add_indicators(df)
