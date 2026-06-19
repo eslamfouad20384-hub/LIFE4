@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🤖 Adaptive Grid System PRO (3 MODES)")
+st.title("🤖 Adaptive Grid System PRO (Smart Swing + Stable Index)")
 
 session = requests.Session()
 
@@ -47,7 +47,9 @@ def get_data(symbol, target_candles=1000, granularity=3600):
         for col in ["low","high","open","close","volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        return df.dropna().tail(target_candles)
+        df = df.dropna().reset_index(drop=True)   # 🧯 FIX INDEX PROBLEM
+
+        return df.tail(target_candles)
 
     except:
         return None
@@ -57,6 +59,8 @@ def get_data(symbol, target_candles=1000, granularity=3600):
 # 📈 INDICATORS
 # =========================
 def add_indicators(df):
+
+    df = df.reset_index(drop=True)  # 🧯 SAFE INDEX AGAIN
 
     df["ema50"] = df["close"].ewm(span=50).mean()
     df["ema200"] = df["close"].ewm(span=200).mean()
@@ -83,7 +87,7 @@ def add_indicators(df):
 
     df["atr"] = tr.rolling(14).mean()
 
-    return df.dropna()
+    return df.dropna().reset_index(drop=True)
 
 
 # =========================
@@ -120,32 +124,57 @@ def analyze(df):
 
 
 # =========================
-# 📉 SUPPORT / RESISTANCE
+# 🔥 SMART SWING DETECTION (FIXED + STRONG)
 # =========================
 def detect_levels(df, left=5, right=5):
 
-    highs = df["high"]
-    lows = df["low"]
+    df = df.reset_index(drop=True)
 
-    supports = []
-    resistances = []
+    highs = df["high"].values
+    lows = df["low"].values
+
+    pivot_highs = []
+    pivot_lows = []
 
     for i in range(left, len(df) - right):
 
-        if lows[i] == min(lows[i-left:i+right+1]):
-            supports.append(lows[i])
+        # 🟢 Pivot High
+        if all(highs[i] > highs[i - j] for j in range(1, left+1)) and \
+           all(highs[i] > highs[i + j] for j in range(1, right+1)):
+            pivot_highs.append(highs[i])
 
-        if highs[i] == max(highs[i-left:i+right+1]):
-            resistances.append(highs[i])
+        # 🔵 Pivot Low
+        if all(lows[i] < lows[i - j] for j in range(1, left+1)) and \
+           all(lows[i] < lows[i + j] for j in range(1, right+1)):
+            pivot_lows.append(lows[i])
 
-    support = np.mean(supports[-3:]) if supports else df["low"].min()
-    resistance = np.mean(resistances[-3:]) if resistances else df["high"].max()
+    # 🧠 filter noise
+    def filter_levels(levels):
+        if len(levels) == 0:
+            return []
+
+        filtered = []
+        threshold = np.std(levels) * 0.3
+
+        for lvl in levels:
+            if len(filtered) == 0:
+                filtered.append(lvl)
+            elif abs(lvl - np.mean(filtered)) > threshold:
+                filtered.append(lvl)
+
+        return filtered
+
+    pivot_highs = filter_levels(pivot_highs)
+    pivot_lows = filter_levels(pivot_lows)
+
+    support = np.mean(pivot_lows[-3:]) if len(pivot_lows) >= 3 else df["low"].min()
+    resistance = np.mean(pivot_highs[-3:]) if len(pivot_highs) >= 3 else df["high"].max()
 
     return support, resistance
 
 
 # =========================
-# 🤖 GRID MODE SYSTEM (NEW CORE)
+# 🤖 GRID MODE SYSTEM
 # =========================
 def grid_mode(score):
 
@@ -167,11 +196,12 @@ def grid_engine(df, score):
     latest = df.iloc[-1]
 
     support, resistance = detect_levels(df)
+
     atr = latest["atr"]
     price = latest["close"]
 
     low = support * 0.995
-    high = resistance * 1.005
+    high = resistance * 0.995
 
     if (high - low) < atr * 6:
         low = price - atr * 7
@@ -181,7 +211,6 @@ def grid_engine(df, score):
 
     volatility = atr / price
 
-    # 🔥 MODE LOGIC
     if mode == "HIGH":
         grids = 60 if volatility > 0.03 else 45
 
@@ -207,31 +236,28 @@ if st.button("Analyze") and coin:
     df = get_data(coin.upper(), 1000)
 
     if df is None or df.empty:
-        st.error("No data available")
+        st.error("No data")
         st.stop()
 
     df = add_indicators(df)
 
     score, reasons = analyze(df)
+
     low, high, grids, mode = grid_engine(df, score)
 
-    # =========================
-    st.subheader("🤖 Grid Mode")
-    st.write(f"Mode: {mode}")
+    st.subheader("🤖 Mode")
+    st.write(mode)
 
-    # =========================
     if mode == "NO_GRID":
         st.error("⚠️ Market not suitable for Grid")
         st.stop()
 
-    # =========================
     st.subheader("📊 Grid Setup")
-    st.write(f"📉 Low: {low:.6f}")
-    st.write(f"📈 High: {high:.6f}")
-    st.write(f"🔢 Grids: {grids}")
+    st.write(f"Low: {low:.6f}")
+    st.write(f"High: {high:.6f}")
+    st.write(f"Grids: {grids}")
 
-    # =========================
-    st.subheader("🧠 Market Score")
+    st.subheader("🧠 Score")
     st.write(score)
 
     st.subheader("📌 Reasons")
