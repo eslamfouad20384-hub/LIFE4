@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🤖 Adaptive Grid System PRO (Smart Swing + Stable Index)")
+st.title("🤖 Adaptive Grid System PRO (Stable + Smart Swing + 4 Modes)")
 
 session = requests.Session()
 
@@ -47,7 +47,7 @@ def get_data(symbol, target_candles=1000, granularity=3600):
         for col in ["low","high","open","close","volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        df = df.dropna().reset_index(drop=True)   # 🧯 FIX INDEX PROBLEM
+        df = df.dropna().reset_index(drop=True)
 
         return df.tail(target_candles)
 
@@ -60,7 +60,7 @@ def get_data(symbol, target_candles=1000, granularity=3600):
 # =========================
 def add_indicators(df):
 
-    df = df.reset_index(drop=True)  # 🧯 SAFE INDEX AGAIN
+    df = df.reset_index(drop=True)
 
     df["ema50"] = df["close"].ewm(span=50).mean()
     df["ema200"] = df["close"].ewm(span=200).mean()
@@ -124,7 +124,7 @@ def analyze(df):
 
 
 # =========================
-# 🔥 SMART SWING DETECTION (FIXED + STRONG)
+# 🔥 SMART SWING DETECTION
 # =========================
 def detect_levels(df, left=5, right=5):
 
@@ -138,17 +138,14 @@ def detect_levels(df, left=5, right=5):
 
     for i in range(left, len(df) - right):
 
-        # 🟢 Pivot High
         if all(highs[i] > highs[i - j] for j in range(1, left+1)) and \
            all(highs[i] > highs[i + j] for j in range(1, right+1)):
             pivot_highs.append(highs[i])
 
-        # 🔵 Pivot Low
         if all(lows[i] < lows[i - j] for j in range(1, left+1)) and \
            all(lows[i] < lows[i + j] for j in range(1, right+1)):
             pivot_lows.append(lows[i])
 
-    # 🧠 filter noise
     def filter_levels(levels):
         if len(levels) == 0:
             return []
@@ -174,18 +171,24 @@ def detect_levels(df, left=5, right=5):
 
 
 # =========================
-# 🤖 GRID MODE SYSTEM
+# 🤖 GRID MODES (NEW SYSTEM)
 # =========================
 def grid_mode(score):
 
     if score >= 75:
         return "HIGH"
+
     elif score >= 55:
         return "MEDIUM"
+
     elif score >= 40:
         return "LOW"
+
+    elif score >= 25:
+        return "WEAK"
+
     else:
-        return "NO_GRID"
+        return "NO_TRADE"
 
 
 # =========================
@@ -220,6 +223,9 @@ def grid_engine(df, score):
     elif mode == "LOW":
         grids = 20 if volatility > 0.03 else 12
 
+    elif mode == "WEAK":
+        grids = 10 if volatility > 0.03 else 8
+
     else:
         grids = 0
 
@@ -248,8 +254,8 @@ if st.button("Analyze") and coin:
     st.subheader("🤖 Mode")
     st.write(mode)
 
-    if mode == "NO_GRID":
-        st.error("⚠️ Market not suitable for Grid")
+    if mode == "NO_TRADE":
+        st.error("⚠️ No Trade - Market too weak")
         st.stop()
 
     st.subheader("📊 Grid Setup")
