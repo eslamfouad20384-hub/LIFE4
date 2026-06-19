@@ -4,15 +4,15 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🤖 Adaptive Grid System PRO (V2 Improved)")
+st.title("🤖 Adaptive Grid System PRO (Stable + Smart Swing + 4 Modes)")
 
 session = requests.Session()
 
 # =========================
-# 📊 DATA
+# 📊 DATA (Coinbase ONLY)
 # =========================
 @st.cache_data(ttl=120)
-def get_data(symbol, target_candles=600, granularity=3600):
+def get_data(symbol, target_candles=1000, granularity=3600):
 
     try:
         url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/candles"
@@ -56,31 +56,26 @@ def get_data(symbol, target_candles=600, granularity=3600):
 
 
 # =========================
-# 📈 INDICATORS (FIXED RSI)
+# 📈 INDICATORS
 # =========================
 def add_indicators(df):
 
     df = df.reset_index(drop=True)
 
-    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
-    df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
+    df["ema50"] = df["close"].ewm(span=50).mean()
+    df["ema200"] = df["close"].ewm(span=200).mean()
 
     delta = df["close"].diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
 
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
-
-    rs = avg_gain / (avg_loss + 1e-9)
+    rs = pd.Series(gain).ewm(alpha=1/14).mean() / (pd.Series(loss).ewm(alpha=1/14).mean() + 1e-9)
     df["rsi"] = 100 - (100 / (1 + rs))
 
-    ema12 = df["close"].ewm(span=12, adjust=False).mean()
-    ema26 = df["close"].ewm(span=26, adjust=False).mean()
-
+    ema12 = df["close"].ewm(span=12).mean()
+    ema26 = df["close"].ewm(span=26).mean()
     df["macd"] = ema12 - ema26
-    df["signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+    df["signal"] = df["macd"].ewm(span=9).mean()
 
     df["vol_ma"] = df["volume"].rolling(20).mean()
 
@@ -93,25 +88,6 @@ def add_indicators(df):
     df["atr"] = tr.rolling(14).mean()
 
     return df.dropna().reset_index(drop=True)
-
-
-# =========================
-# 🧠 MARKET REGIME FILTER (NEW)
-# =========================
-def market_regime(df):
-
-    atr_ratio = df["atr"].iloc[-1] / df["close"].iloc[-1]
-
-    ema_diff = abs(df["ema50"].iloc[-1] - df["ema200"].iloc[-1]) / df["close"].iloc[-1]
-
-    if atr_ratio > 0.04:
-        return "HIGH_VOL"
-    elif ema_diff > 0.05:
-        return "TRENDING"
-    elif atr_ratio < 0.015:
-        return "LOW_VOL"
-    else:
-        return "RANGING"
 
 
 # =========================
@@ -148,9 +124,11 @@ def analyze(df):
 
 
 # =========================
-# 🔥 IMPROVED SUPPORT/RESISTANCE
+# 🔥 SMART SWING DETECTION
 # =========================
-def detect_levels(df):
+def detect_levels(df, left=5, right=5):
+
+    df = df.reset_index(drop=True)
 
     highs = df["high"].values
     lows = df["low"].values
@@ -158,73 +136,100 @@ def detect_levels(df):
     pivot_highs = []
     pivot_lows = []
 
-    for i in range(5, len(df) - 5):
+    for i in range(left, len(df) - right):
 
-        if all(highs[i] > highs[i-j] for j in range(1, 6)) and \
-           all(highs[i] > highs[i+j] for j in range(1, 6)):
+        if all(highs[i] > highs[i - j] for j in range(1, left+1)) and \
+           all(highs[i] > highs[i + j] for j in range(1, right+1)):
             pivot_highs.append(highs[i])
 
-        if all(lows[i] < lows[i-j] for j in range(1, 6)) and \
-           all(lows[i] < lows[i+j] for j in range(1, 6)):
+        if all(lows[i] < lows[i - j] for j in range(1, left+1)) and \
+           all(lows[i] < lows[i + j] for j in range(1, right+1)):
             pivot_lows.append(lows[i])
 
-    # fallback protection
-    support = (
-        np.mean(pivot_lows[-3:]) if len(pivot_lows) >= 3
-        else df["low"].rolling(50).min().iloc[-1]
-    )
+    def filter_levels(levels):
+        if len(levels) == 0:
+            return []
 
-    resistance = (
-        np.mean(pivot_highs[-3:]) if len(pivot_highs) >= 3
-        else df["high"].rolling(50).max().iloc[-1]
-    )
+        filtered = []
+        threshold = np.std(levels) * 0.3
+
+        for lvl in levels:
+            if len(filtered) == 0:
+                filtered.append(lvl)
+            elif abs(lvl - np.mean(filtered)) > threshold:
+                filtered.append(lvl)
+
+        return filtered
+
+    pivot_highs = filter_levels(pivot_highs)
+    pivot_lows = filter_levels(pivot_lows)
+
+    support = np.mean(pivot_lows[-3:]) if len(pivot_lows) >= 3 else df["low"].min()
+    resistance = np.mean(pivot_highs[-3:]) if len(pivot_highs) >= 3 else df["high"].max()
 
     return support, resistance
 
 
 # =========================
-# 🔥 IMPROVED RANGE CALCULATION
+# 🤖 GRID MODES (NEW SYSTEM)
 # =========================
-def calc_range(price, support, resistance, atr):
+def grid_mode(score):
 
-    base_low = min(support, price - atr * 3)
-    base_high = max(resistance, price + atr * 3)
+    if score >= 75:
+        return "HIGH"
 
-    # prevent too small range
-    min_range = price * 0.03
+    elif score >= 55:
+        return "MEDIUM"
 
-    if (base_high - base_low) < min_range:
-        base_low = price - min_range
-        base_high = price + min_range
+    elif score >= 40:
+        return "LOW"
 
-    return base_low, base_high
+    elif score >= 25:
+        return "WEAK"
+
+    else:
+        return "NO_TRADE"
 
 
 # =========================
-# 🤖 GRID ENGINE
+# 🤖 ADAPTIVE GRID ENGINE
 # =========================
 def grid_engine(df, score):
 
     latest = df.iloc[-1]
-    price = latest["close"]
-    atr = latest["atr"]
 
     support, resistance = detect_levels(df)
-    low, high = calc_range(price, support, resistance, atr)
 
-    regime = market_regime(df)
+    atr = latest["atr"]
+    price = latest["close"]
 
-    # grid logic based on regime + score
-    if regime == "HIGH_VOL":
-        grids = 20
-    elif regime == "TRENDING":
-        grids = 10 if score < 60 else 15
-    elif regime == "LOW_VOL":
-        grids = 40
-    else:  # RANGING
-        grids = 30 if score > 55 else 20
+    low = support * 0.995
+    high = resistance * 0.995
 
-    return low, high, grids, regime
+    if (high - low) < atr * 6:
+        low = price - atr * 7
+        high = price + atr * 7
+
+    mode = grid_mode(score)
+
+    volatility = atr / price
+
+    if mode == "HIGH":
+        grids = 60 if volatility > 0.03 else 45
+
+    elif mode == "MEDIUM":
+        grids = 35 if volatility > 0.03 else 25
+
+    elif mode == "LOW":
+        grids = 20 if volatility > 0.03 else 12
+
+    elif mode == "WEAK":
+        grids = 10 if volatility > 0.03 else 8
+
+    else:
+        grids = 0
+
+    return low, high, int(grids), mode
 
 
 # =========================
@@ -234,7 +239,7 @@ coin = st.text_input("🔎 Enter Coin (BTC, ETH, SOL...)")
 
 if st.button("Analyze") and coin:
 
-    df = get_data(coin.upper(), 600)
+    df = get_data(coin.upper(), 1000)
 
     if df is None or df.empty:
         st.error("No data")
@@ -244,10 +249,14 @@ if st.button("Analyze") and coin:
 
     score, reasons = analyze(df)
 
-    low, high, grids, regime = grid_engine(df, score)
+    low, high, grids, mode = grid_engine(df, score)
 
-    st.subheader("🤖 Market Regime")
-    st.write(regime)
+    st.subheader("🤖 Mode")
+    st.write(mode)
+
+    if mode == "NO_TRADE":
+        st.error("⚠️ No Trade - Market too weak")
+        st.stop()
 
     st.subheader("📊 Grid Setup")
     st.write(f"Low: {low:.6f}")
