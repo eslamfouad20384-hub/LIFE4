@@ -4,12 +4,12 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🤖 HYBRID GRID PRO SYSTEM (AI + Smart Selection)")
+st.title("🤖 HYBRID GRID PRO SYSTEM (Wide + Narrow + Auto Range)")
 
 session = requests.Session()
 
 # =========================
-# 🧠 TOP 100 COINS (REAL MARKET)
+# 🧠 TOP COINS
 # =========================
 @st.cache_data(ttl=600)
 def get_top_coins():
@@ -50,7 +50,7 @@ def get_data(symbol, candles=250):
 
 
 # =========================
-# 📈 INDICATORS (FIXED RSI)
+# 📈 INDICATORS
 # =========================
 def indicators(df):
 
@@ -84,111 +84,110 @@ def indicators(df):
 
 
 # =========================
-# 🧠 SWING LEVELS (IMPROVED)
+# 🧠 MARKET MODE (AUTO)
 # =========================
-def swing_levels(df):
-    highs = df["high"].values
-    lows = df["low"].values
+def market_mode(df):
+    l = df.iloc[-1]
 
-    ph = []
-    pl = []
+    trend = abs(l["ema50"] - l["ema200"]) / l["close"]
+    rsi = l["rsi"]
 
-    for i in range(5, len(df)-5):
-        if highs[i] == max(highs[i-5:i+6]):
-            ph.append(highs[i])
-
-        if lows[i] == min(lows[i-5:i+6]):
-            pl.append(lows[i])
-
-    support = np.median(pl[-5:]) if len(pl) else df["low"].min()
-    resistance = np.median(ph[-5:]) if len(ph) else df["high"].max()
-
-    return support, resistance
+    if trend < 0.012 and 40 < rsi < 60:
+        return "SIDEWAYS_STRONG"
+    elif trend < 0.02:
+        return "MIXED"
+    else:
+        return "TRENDING"
 
 
 # =========================
-# 🧠 SCORE (GRID FILTER)
+# 📊 AUTO RANGE DETECTION
+# =========================
+def auto_range(df):
+    l = df.iloc[-1]
+
+    atr = l["atr"]
+    price = l["close"]
+
+    high = df["high"].rolling(20).max().iloc[-1]
+    low = df["low"].rolling(20).min().iloc[-1]
+
+    if (high - low) < atr * 3:
+        low = price - atr * 6
+        high = price + atr * 6
+
+    return low, high
+
+
+# =========================
+# 🧠 SCORE ENGINE
 # =========================
 def score(df):
     l = df.iloc[-1]
     s = 0
     r = []
 
-    # RSI (neutral grid zone only)
     if 40 < l["rsi"] < 65:
-        s += 20; r.append("RSI neutral zone")
-    elif l["rsi"] < 35:
-        s += 10; r.append("oversold support zone")
+        s += 20; r.append("RSI neutral")
 
-    # MACD
     if l["macd"] > l["signal"]:
         s += 10; r.append("MACD bullish")
 
-    # Trend filter (IMPORTANT)
-    trend_strength = abs(l["ema50"] - l["ema200"]) / l["close"]
-    if trend_strength < 0.015:
-        s += 25; r.append("Sideways market (ideal grid)")
-    else:
-        s -= 20; r.append("Trending market (risky grid)")
+    trend = abs(l["ema50"] - l["ema200"]) / l["close"]
 
-    # Volume
+    if trend < 0.015:
+        s += 25; r.append("Sideways market")
+    else:
+        s -= 20; r.append("Trending risk")
+
     if l["volume"] > l["vol_ma"]:
         s += 10; r.append("Volume active")
 
-    # Volatility
     if l["atr"] / l["close"] > 0.01:
-        s += 10; r.append("Enough volatility")
+        s += 10; r.append("Volatility OK")
 
     return s, r
 
 
 # =========================
-# 🤖 GRID MODE
-# =========================
-def mode(s):
-    if s >= 70:
-        return "STRONG"
-    elif s >= 55:
-        return "GOOD"
-    elif s >= 40:
-        return "OK"
-    elif s >= 25:
-        return "WEAK"
-    else:
-        return "NO_TRADE"
-
-
-# =========================
-# 📦 GRID ENGINE
+# 🤖 GRID ENGINE (WIDE + NARROW)
 # =========================
 def grid(df, sc):
+
     l = df.iloc[-1]
 
-    support, resistance = swing_levels(df)
+    mode = market_mode(df)
+    low, high = auto_range(df)
+
     price = l["close"]
     atr = l["atr"]
 
-    low, high = support, resistance
+    # =========================
+    # GRID LOGIC
+    # =========================
 
-    if high - low < atr * 5:
-        low = price - atr * 6
-        high = price + atr * 6
+    if mode == "SIDEWAYS_STRONG":
+        grid_type = "NARROW_GRID"
+        grids = 45
+        step = atr * 0.8
 
-    m = mode(sc)
-    vol = atr / price
-
-    if m == "STRONG":
-        grids = 40 if vol > 0.03 else 30
-    elif m == "GOOD":
+    elif mode == "MIXED":
+        grid_type = "WIDE_GRID"
         grids = 25
-    elif m == "OK":
-        grids = 15
-    elif m == "WEAK":
-        grids = 8
-    else:
-        grids = 0
+        step = atr * 1.5
 
-    return low, high, grids, m
+    else:
+        grid_type = "NO_GRID"
+        grids = 0
+        step = 0
+
+    # safety range fix
+    if grid_type != "NO_GRID":
+        if high - low < atr * 5:
+            low = price - atr * 5
+            high = price + atr * 5
+
+    return low, high, grids, grid_type
 
 
 # =========================
@@ -223,10 +222,11 @@ if st.button("🔥 Find Best GRID Coin"):
         best = table.iloc[0]["Coin"]
         st.success(f"🔥 BEST GRID COIN: {best}")
     else:
-        st.warning("No good grid setups")
+        st.warning("No good setups")
+
 
 # =========================
-# 🔍 SINGLE ANALYSIS
+# 🔍 ANALYZE SINGLE COIN
 # =========================
 coin = st.text_input("Enter Coin (BTC, ETH, SOL...)")
 
@@ -243,14 +243,14 @@ if st.button("Analyze") and coin:
     sc, reasons = score(df)
     low, high, grids, m = grid(df, sc)
 
-    st.subheader("Mode")
+    st.subheader("Market Mode")
     st.write(m)
 
-    if m == "NO_TRADE":
-        st.error("Market not suitable for GRID")
+    if m == "NO_GRID":
+        st.error("Market trending → No Grid allowed")
         st.stop()
 
-    st.subheader("Grid Levels")
+    st.subheader("Grid Range")
     st.write(f"Low: {low:.4f}")
     st.write(f"High: {high:.4f}")
     st.write(f"Grids: {grids}")
