@@ -4,12 +4,12 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🤖 Adaptive Grid Engine PRO")
+st.title("🤖 Adaptive Grid System PRO (3 MODES)")
 
 session = requests.Session()
 
 # =========================
-# 📊 DATA LOADER (Coinbase ONLY)
+# 📊 DATA (Coinbase ONLY)
 # =========================
 @st.cache_data(ttl=120)
 def get_data(symbol, target_candles=1000, granularity=3600):
@@ -114,93 +114,87 @@ def analyze(df):
 
     if latest["close"] > df["close"].iloc[-5:].mean():
         score += 10
-        reasons.append("Momentum up +10")
+        reasons.append("Momentum +10")
 
     return score, reasons
 
 
 # =========================
-# 📉 SUPPORT / RESISTANCE (Pivot Style)
+# 📉 SUPPORT / RESISTANCE
 # =========================
 def detect_levels(df, left=5, right=5):
 
     highs = df["high"]
     lows = df["low"]
 
-    support_levels = []
-    resistance_levels = []
+    supports = []
+    resistances = []
 
     for i in range(left, len(df) - right):
 
         if lows[i] == min(lows[i-left:i+right+1]):
-            support_levels.append(lows[i])
+            supports.append(lows[i])
 
         if highs[i] == max(highs[i-left:i+right+1]):
-            resistance_levels.append(highs[i])
+            resistances.append(highs[i])
 
-    support = np.mean(support_levels[-3:]) if support_levels else df["low"].min()
-    resistance = np.mean(resistance_levels[-3:]) if resistance_levels else df["high"].max()
+    support = np.mean(supports[-3:]) if supports else df["low"].min()
+    resistance = np.mean(resistances[-3:]) if resistances else df["high"].max()
 
     return support, resistance
 
 
 # =========================
-# 🤖 ADAPTIVE GRID SYSTEM (MAIN ENGINE)
+# 🤖 GRID MODE SYSTEM (NEW CORE)
+# =========================
+def grid_mode(score):
+
+    if score >= 75:
+        return "HIGH"
+    elif score >= 55:
+        return "MEDIUM"
+    elif score >= 40:
+        return "LOW"
+    else:
+        return "NO_GRID"
+
+
+# =========================
+# 🤖 ADAPTIVE GRID ENGINE
 # =========================
 def grid_engine(df, score):
 
     latest = df.iloc[-1]
 
     support, resistance = detect_levels(df)
-
     atr = latest["atr"]
     price = latest["close"]
 
-    # 📉 Dynamic range
     low = support * 0.995
     high = resistance * 1.005
 
-    min_range = atr * 6
-
-    if (high - low) < min_range:
+    if (high - low) < atr * 6:
         low = price - atr * 7
         high = price + atr * 7
 
-    # 📊 volatility
+    mode = grid_mode(score)
+
     volatility = atr / price
 
-    # 🔢 base grids
-    if volatility < 0.02:
-        grids = 18
-    elif volatility < 0.05:
-        grids = 35
+    # 🔥 MODE LOGIC
+    if mode == "HIGH":
+        grids = 60 if volatility > 0.03 else 45
+
+    elif mode == "MEDIUM":
+        grids = 35 if volatility > 0.03 else 25
+
+    elif mode == "LOW":
+        grids = 20 if volatility > 0.03 else 12
+
     else:
-        grids = 55
+        grids = 0
 
-    # 🧠 Adaptive adjustment (CORE FEATURE)
-    if score >= 75:
-        grids += 10
-    elif score < 50:
-        grids -= 10
-
-    grids = max(10, min(80, grids))
-
-    return low, high, int(grids)
-
-
-# =========================
-# 🧠 GRID DECISION LAYER
-# =========================
-def grid_decision(score):
-
-    if score >= 75:
-        return "STRONG_GRID"
-    elif score >= 60:
-        return "NORMAL_GRID"
-    elif score >= 50:
-        return "REDUCED_GRID"
-    else:
-        return "NO_GRID"
+    return low, high, int(grids), mode
 
 
 # =========================
@@ -213,34 +207,33 @@ if st.button("Analyze") and coin:
     df = get_data(coin.upper(), 1000)
 
     if df is None or df.empty:
-        st.error("No data")
+        st.error("No data available")
         st.stop()
 
     df = add_indicators(df)
 
     score, reasons = analyze(df)
-    decision = grid_decision(score)
+    low, high, grids, mode = grid_engine(df, score)
 
-    if decision == "NO_GRID":
+    # =========================
+    st.subheader("🤖 Grid Mode")
+    st.write(f"Mode: {mode}")
+
+    # =========================
+    if mode == "NO_GRID":
         st.error("⚠️ Market not suitable for Grid")
         st.stop()
 
-    low, high, grids = grid_engine(df, score)
-
-    latest = df.iloc[-1]
-
     # =========================
-    st.subheader("📊 Market Score")
-    st.write(score)
-    st.write(decision)
-
-    # =========================
-    st.subheader("🤖 Adaptive Grid Output")
+    st.subheader("📊 Grid Setup")
     st.write(f"📉 Low: {low:.6f}")
     st.write(f"📈 High: {high:.6f}")
     st.write(f"🔢 Grids: {grids}")
 
     # =========================
-    st.subheader("🧠 Reasons")
+    st.subheader("🧠 Market Score")
+    st.write(score)
+
+    st.subheader("📌 Reasons")
     for r in reasons:
         st.write("•", r)
