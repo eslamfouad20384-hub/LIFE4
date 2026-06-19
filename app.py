@@ -4,54 +4,34 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🤖 HYBRID GRID PRO SYSTEM (Scanner + Swing + AI Mode)")
+st.title("🤖 HYBRID GRID PRO SYSTEM (AI + Smart Selection)")
 
 session = requests.Session()
 
 # =========================
-# ⚡ FAST SCANNER (TOP COINS)
+# 🧠 TOP 100 COINS (REAL MARKET)
 # =========================
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)
 def get_top_coins():
-    try:
-        url = "https://api.exchange.coinbase.com/products"
-        r = session.get(url, timeout=10).json()
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "order": "volume_desc",
+        "per_page": 100,
+        "page": 1
+    }
 
-        coins = []
-        for item in r:
-            if item["quote_currency"] == "USD":
-                coins.append(item["id"])
-
-        coins = coins[:80]
-
-        volumes = []
-
-        for symbol in coins:
-            try:
-                url2 = f"https://api.exchange.coinbase.com/products/{symbol}/ticker"
-                data = session.get(url2, timeout=5).json()
-
-                if "volume" in data:
-                    volumes.append((symbol.replace("-USD",""), float(data["volume"])))
-            except:
-                pass
-
-        volumes.sort(key=lambda x: x[1], reverse=True)
-
-        return [x[0] for x in volumes[:20]]
-
-    except:
-        return []
+    r = session.get(url, params=params, timeout=10).json()
+    return [x["symbol"].upper() for x in r]
 
 
 # =========================
-# 📊 GET CANDLES (FAST)
+# 📊 DATA
 # =========================
 @st.cache_data(ttl=120)
 def get_data(symbol, candles=250):
     try:
         url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/candles"
-
         data = session.get(url, params={"granularity": 3600}, timeout=10).json()
 
         if not isinstance(data, list):
@@ -70,7 +50,7 @@ def get_data(symbol, candles=250):
 
 
 # =========================
-# 📈 INDICATORS
+# 📈 INDICATORS (FIXED RSI)
 # =========================
 def indicators(df):
 
@@ -78,16 +58,16 @@ def indicators(df):
     df["ema200"] = df["close"].ewm(span=200).mean()
 
     delta = df["close"].diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    rs = pd.Series(gain).ewm(alpha=1/14).mean() / (pd.Series(loss).ewm(alpha=1/14).mean() + 1e-9)
+    avg_gain = gain.ewm(alpha=1/14).mean()
+    avg_loss = loss.ewm(alpha=1/14).mean()
+
+    rs = avg_gain / (avg_loss + 1e-9)
     df["rsi"] = 100 - (100 / (1 + rs))
 
-    ema12 = df["close"].ewm(span=12).mean()
-    ema26 = df["close"].ewm(span=26).mean()
-
-    df["macd"] = ema12 - ema26
+    df["macd"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
     df["signal"] = df["macd"].ewm(span=9).mean()
 
     df["vol_ma"] = df["volume"].rolling(20).mean()
@@ -104,58 +84,60 @@ def indicators(df):
 
 
 # =========================
-# 🧠 SWING LEVELS
+# 🧠 SWING LEVELS (IMPROVED)
 # =========================
-def swing_levels(df, left=5, right=5):
-
+def swing_levels(df):
     highs = df["high"].values
     lows = df["low"].values
 
     ph = []
     pl = []
 
-    for i in range(left, len(df)-right):
-
-        if all(highs[i] > highs[i-j] for j in range(1,left+1)) and \
-           all(highs[i] > highs[i+j] for j in range(1,right+1)):
+    for i in range(5, len(df)-5):
+        if highs[i] == max(highs[i-5:i+6]):
             ph.append(highs[i])
 
-        if all(lows[i] < lows[i-j] for j in range(1,left+1)) and \
-           all(lows[i] < lows[i+j] for j in range(1,right+1)):
+        if lows[i] == min(lows[i-5:i+6]):
             pl.append(lows[i])
 
-    support = np.mean(pl[-3:]) if len(pl) >= 3 else df["low"].min()
-    resistance = np.mean(ph[-3:]) if len(ph) >= 3 else df["high"].max()
+    support = np.median(pl[-5:]) if len(pl) else df["low"].min()
+    resistance = np.median(ph[-5:]) if len(ph) else df["high"].max()
 
     return support, resistance
 
 
 # =========================
-# 🧠 SCORE ENGINE
+# 🧠 SCORE (GRID FILTER)
 # =========================
 def score(df):
-
     l = df.iloc[-1]
     s = 0
     r = []
 
-    if l["rsi"] < 40:
-        s += 15; r.append("RSI good")
+    # RSI (neutral grid zone only)
+    if 40 < l["rsi"] < 65:
+        s += 20; r.append("RSI neutral zone")
+    elif l["rsi"] < 35:
+        s += 10; r.append("oversold support zone")
 
+    # MACD
     if l["macd"] > l["signal"]:
-        s += 15; r.append("MACD bullish")
+        s += 10; r.append("MACD bullish")
 
-    if l["ema50"] > l["ema200"]:
-        s += 15; r.append("Uptrend")
+    # Trend filter (IMPORTANT)
+    trend_strength = abs(l["ema50"] - l["ema200"]) / l["close"]
+    if trend_strength < 0.015:
+        s += 25; r.append("Sideways market (ideal grid)")
+    else:
+        s -= 20; r.append("Trending market (risky grid)")
 
+    # Volume
     if l["volume"] > l["vol_ma"]:
-        s += 10; r.append("Volume spike")
+        s += 10; r.append("Volume active")
 
-    if abs(l["ema50"] - l["ema200"]) / l["close"] < 0.02:
-        s += 10; r.append("Sideways structure")
-
-    if l["atr"] / l["close"] > 0.015:
-        s += 10; r.append("Volatility OK")
+    # Volatility
+    if l["atr"] / l["close"] > 0.01:
+        s += 10; r.append("Enough volatility")
 
     return s, r
 
@@ -164,7 +146,6 @@ def score(df):
 # 🤖 GRID MODE
 # =========================
 def mode(s):
-
     if s >= 70:
         return "STRONG"
     elif s >= 55:
@@ -180,33 +161,30 @@ def mode(s):
 # =========================
 # 📦 GRID ENGINE
 # =========================
-def grid(df, score):
-
+def grid(df, sc):
     l = df.iloc[-1]
 
     support, resistance = swing_levels(df)
-
     price = l["close"]
     atr = l["atr"]
 
-    low = support
-    high = resistance
+    low, high = support, resistance
 
     if high - low < atr * 5:
         low = price - atr * 6
         high = price + atr * 6
 
-    m = mode(score)
+    m = mode(sc)
     vol = atr / price
 
     if m == "STRONG":
-        grids = 50 if vol > 0.03 else 35
+        grids = 40 if vol > 0.03 else 30
     elif m == "GOOD":
-        grids = 30
+        grids = 25
     elif m == "OK":
-        grids = 18
+        grids = 15
     elif m == "WEAK":
-        grids = 10
+        grids = 8
     else:
         grids = 0
 
@@ -214,9 +192,9 @@ def grid(df, score):
 
 
 # =========================
-# 🚀 MAIN SCANNER
+# 🚀 SCANNER
 # =========================
-if st.button("🔥 Find Best Hybrid GRID Coin"):
+if st.button("🔥 Find Best GRID Coin"):
 
     coins = get_top_coins()
     results = []
@@ -224,35 +202,28 @@ if st.button("🔥 Find Best Hybrid GRID Coin"):
     for c in coins:
 
         df = get_data(c, 250)
-
         if df is None or len(df) < 120:
             continue
 
         df = indicators(df)
-
         if len(df) < 50:
             continue
 
         sc, _ = score(df)
 
-        if sc < 40:
+        if sc < 45:
             continue
 
-        results.append({
-            "Coin": c,
-            "Score": sc
-        })
+        results.append({"Coin": c, "Score": sc})
 
     if results:
         table = pd.DataFrame(results).sort_values("Score", ascending=False)
         st.dataframe(table)
 
         best = table.iloc[0]["Coin"]
-        st.success(f"🔥 BEST COIN: {best}")
-
+        st.success(f"🔥 BEST GRID COIN: {best}")
     else:
-        st.warning("No good opportunities")
-
+        st.warning("No good grid setups")
 
 # =========================
 # 🔍 SINGLE ANALYSIS
@@ -270,14 +241,13 @@ if st.button("Analyze") and coin:
     df = indicators(df)
 
     sc, reasons = score(df)
-
     low, high, grids, m = grid(df, sc)
 
     st.subheader("Mode")
     st.write(m)
 
     if m == "NO_TRADE":
-        st.error("Market not suitable")
+        st.error("Market not suitable for GRID")
         st.stop()
 
     st.subheader("Grid Levels")
