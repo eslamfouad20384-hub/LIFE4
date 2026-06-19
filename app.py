@@ -4,109 +4,84 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🤖 Adaptive Grid System PRO - Smart Grid Selector (FAST VERSION)")
+st.title("🤖 HYBRID GRID PRO SYSTEM (Scanner + Swing + AI Mode)")
 
 session = requests.Session()
 
 # =========================
-# GET TOP LIQUID COINS (FAST)
+# ⚡ FAST SCANNER (TOP COINS)
 # =========================
-@st.cache_data(ttl=600)
-def get_top_100_coins():
+@st.cache_data(ttl=300)
+def get_top_coins():
     try:
         url = "https://api.exchange.coinbase.com/products"
         r = session.get(url, timeout=10).json()
 
-        usdt_pairs = []
+        coins = []
         for item in r:
             if item["quote_currency"] == "USD":
-                usdt_pairs.append(item["id"])
+                coins.append(item["id"])
 
-        # نجيب tickers بدل candles (أسرع بكتير)
+        coins = coins[:80]
+
         volumes = []
 
-        usdt_pairs = usdt_pairs[:100]  # تقليل الضغط
-
-        for symbol in usdt_pairs:
+        for symbol in coins:
             try:
                 url2 = f"https://api.exchange.coinbase.com/products/{symbol}/ticker"
                 data = session.get(url2, timeout=5).json()
 
                 if "volume" in data:
-                    volume = float(data["volume"])
-                    base = symbol.replace("-USD", "")
-                    volumes.append((base, volume))
+                    volumes.append((symbol.replace("-USD",""), float(data["volume"])))
             except:
                 pass
 
         volumes.sort(key=lambda x: x[1], reverse=True)
 
-        return [x[0] for x in volumes[:30]]  # أفضل 30 فقط
+        return [x[0] for x in volumes[:20]]
 
     except:
         return []
 
 
 # =========================
-# GET DATA (OPTIMIZED)
+# 📊 GET CANDLES (FAST)
 # =========================
 @st.cache_data(ttl=120)
-def get_data(symbol, target_candles=200, granularity=3600):
+def get_data(symbol, candles=250):
     try:
         url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/candles"
 
-        all_data = []
-        end = None
+        data = session.get(url, params={"granularity": 3600}, timeout=10).json()
 
-        while len(all_data) < target_candles:
-            params = {"granularity": granularity}
-            if end:
-                params["end"] = end
+        if not isinstance(data, list):
+            return None
 
-            r = session.get(url, params=params, timeout=10).json()
+        df = pd.DataFrame(data, columns=["time","low","high","open","close","volume"])
+        df = df.sort_values("time").reset_index(drop=True)
 
-            if not isinstance(r, list) or len(r) == 0:
-                break
+        for c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
 
-            all_data.extend(r)
-
-            oldest = min(r, key=lambda x: x[0])[0]
-            end = oldest - granularity
-
-            if len(r) < 2:
-                break
-
-        df = pd.DataFrame(all_data, columns=["time","low","high","open","close","volume"])
-
-        df = df.drop_duplicates(subset=["time"])
-        df = df.sort_values("time", ascending=True).reset_index(drop=True)
-
-        for col in ["low","high","open","close","volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        return df.dropna().tail(target_candles)
+        return df.tail(candles).dropna()
 
     except:
         return None
 
 
 # =========================
-# INDICATORS
+# 📈 INDICATORS
 # =========================
-def add_indicators(df):
-    df = df.reset_index(drop=True)
+def indicators(df):
 
     df["ema50"] = df["close"].ewm(span=50).mean()
     df["ema200"] = df["close"].ewm(span=200).mean()
 
     delta = df["close"].diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
 
-    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
-
-    rs = avg_gain / (avg_loss + 1e-9)
+    rs = pd.Series(gain).ewm(alpha=1/14).mean() / (pd.Series(loss).ewm(alpha=1/14).mean() + 1e-9)
     df["rsi"] = 100 - (100 / (1 + rs))
 
     ema12 = df["close"].ewm(span=12).mean()
@@ -125,133 +100,194 @@ def add_indicators(df):
 
     df["atr"] = tr.rolling(14).mean()
 
-    return df.dropna()
+    return df.dropna().reset_index(drop=True)
 
 
 # =========================
-# GRID FILTER (STRICT SIDEWAYS)
+# 🧠 SWING LEVELS
 # =========================
-def is_good_for_grid(df):
-    latest = df.iloc[-1]
+def swing_levels(df, left=5, right=5):
 
-    ema_gap = abs(latest["ema50"] - latest["ema200"]) / latest["close"]
-    atr_ratio = latest["atr"] / latest["close"]
+    highs = df["high"].values
+    lows = df["low"].values
 
-    rsi_ok = 40 <= latest["rsi"] <= 60
-    not_trending = ema_gap < 0.02
-    vol_ok = 0.015 < atr_ratio < 0.04
+    ph = []
+    pl = []
 
-    return rsi_ok and not_trending and vol_ok
+    for i in range(left, len(df)-right):
 
+        if all(highs[i] > highs[i-j] for j in range(1,left+1)) and \
+           all(highs[i] > highs[i+j] for j in range(1,right+1)):
+            ph.append(highs[i])
 
-# =========================
-# SMART SCORING (IMPROVED)
-# =========================
-def rank_coin(df):
-    latest = df.iloc[-1]
+        if all(lows[i] < lows[i-j] for j in range(1,left+1)) and \
+           all(lows[i] < lows[i+j] for j in range(1,right+1)):
+            pl.append(lows[i])
 
-    rsi_score = 30 - abs(50 - latest["rsi"])
+    support = np.mean(pl[-3:]) if len(pl) >= 3 else df["low"].min()
+    resistance = np.mean(ph[-3:]) if len(ph) >= 3 else df["high"].max()
 
-    trend_score = 30 - (abs(latest["ema50"] - latest["ema200"]) / latest["close"] * 1000)
-
-    volume_score = 20 if latest["volume"] > latest["vol_ma"] else 5
-
-    atr_score = (latest["atr"] / latest["close"]) * 1000
-
-    return rsi_score + trend_score + volume_score + atr_score
+    return support, resistance
 
 
 # =========================
-# GRID ENGINE
+# 🧠 SCORE ENGINE
 # =========================
-def grid_engine(df):
-    latest = df.iloc[-1]
+def score(df):
 
-    price = latest["close"]
-    atr = latest["atr"]
+    l = df.iloc[-1]
+    s = 0
+    r = []
 
-    low = price - atr * 5
-    high = price + atr * 5
+    if l["rsi"] < 40:
+        s += 15; r.append("RSI good")
 
-    volatility = atr / price
+    if l["macd"] > l["signal"]:
+        s += 15; r.append("MACD bullish")
 
-    if volatility > 0.035:
-        grids = 22
-    elif volatility > 0.02:
-        grids = 16
+    if l["ema50"] > l["ema200"]:
+        s += 15; r.append("Uptrend")
+
+    if l["volume"] > l["vol_ma"]:
+        s += 10; r.append("Volume spike")
+
+    if abs(l["ema50"] - l["ema200"]) / l["close"] < 0.02:
+        s += 10; r.append("Sideways structure")
+
+    if l["atr"] / l["close"] > 0.015:
+        s += 10; r.append("Volatility OK")
+
+    return s, r
+
+
+# =========================
+# 🤖 GRID MODE
+# =========================
+def mode(s):
+
+    if s >= 70:
+        return "STRONG"
+    elif s >= 55:
+        return "GOOD"
+    elif s >= 40:
+        return "OK"
+    elif s >= 25:
+        return "WEAK"
     else:
+        return "NO_TRADE"
+
+
+# =========================
+# 📦 GRID ENGINE
+# =========================
+def grid(df, score):
+
+    l = df.iloc[-1]
+
+    support, resistance = swing_levels(df)
+
+    price = l["close"]
+    atr = l["atr"]
+
+    low = support
+    high = resistance
+
+    if high - low < atr * 5:
+        low = price - atr * 6
+        high = price + atr * 6
+
+    m = mode(score)
+    vol = atr / price
+
+    if m == "STRONG":
+        grids = 50 if vol > 0.03 else 35
+    elif m == "GOOD":
+        grids = 30
+    elif m == "OK":
+        grids = 18
+    elif m == "WEAK":
         grids = 10
+    else:
+        grids = 0
 
-    return low, high, grids
+    return low, high, grids, m
 
 
 # =========================
-# FIND BEST GRID COIN
+# 🚀 MAIN SCANNER
 # =========================
-if st.button("🏆 Find Best GRID Coin (FAST MODE)"):
+if st.button("🔥 Find Best Hybrid GRID Coin"):
 
-    coins = get_top_100_coins()
+    coins = get_top_coins()
     results = []
 
-    for symbol in coins:
-        try:
-            df = get_data(symbol, 200)
+    for c in coins:
 
-            if df is None or len(df) < 100:
-                continue
+        df = get_data(c, 250)
 
-            df = add_indicators(df)
+        if df is None or len(df) < 120:
+            continue
 
-            if not is_good_for_grid(df):
-                continue
+        df = indicators(df)
 
-            results.append({
-                "Coin": symbol,
-                "Score": rank_coin(df)
-            })
+        if len(df) < 50:
+            continue
 
-        except:
-            pass
+        sc, _ = score(df)
+
+        if sc < 40:
+            continue
+
+        results.append({
+            "Coin": c,
+            "Score": sc
+        })
 
     if results:
         table = pd.DataFrame(results).sort_values("Score", ascending=False)
         st.dataframe(table)
 
         best = table.iloc[0]["Coin"]
-        st.success(f"🔥 Best GRID Coin: {best}")
+        st.success(f"🔥 BEST COIN: {best}")
 
     else:
-        st.warning("No good grid opportunities right now.")
+        st.warning("No good opportunities")
 
 
 # =========================
-# SINGLE ANALYSIS
+# 🔍 SINGLE ANALYSIS
 # =========================
-coin = st.text_input("🔎 Enter Coin (e.g BTC, ETH)")
+coin = st.text_input("Enter Coin (BTC, ETH, SOL...)")
 
 if st.button("Analyze") and coin:
-    df = get_data(coin.upper(), 200)
 
-    if df is None or df.empty:
-        st.error("No data available")
+    df = get_data(coin.upper(), 250)
+
+    if df is None:
+        st.error("No data")
         st.stop()
 
-    df = add_indicators(df)
-    latest = df.iloc[-1]
+    df = indicators(df)
 
-    if not is_good_for_grid(df):
-        st.warning("⚠️ Not ideal for Grid (strong trend detected)")
+    sc, reasons = score(df)
 
-    low, high, grids = grid_engine(df)
+    low, high, grids, m = grid(df, sc)
 
-    st.write(f"Price: {latest['close']:.4f}")
-    st.write(f"Grid Low: {low:.4f}")
-    st.write(f"Grid High: {high:.4f}")
-    st.write(f"Grid Levels: {grids}")
-    st.write(f"RSI: {latest['rsi']:.2f}")
-    st.write(f"ATR: {latest['atr']:.4f}")
+    st.subheader("Mode")
+    st.write(m)
 
-    if is_good_for_grid(df):
-        st.success("Market Type: SIDEWAYS GRID READY")
-    else:
-        st.error("Market Type: TRENDING - AVOID GRID")
+    if m == "NO_TRADE":
+        st.error("Market not suitable")
+        st.stop()
+
+    st.subheader("Grid Levels")
+    st.write(f"Low: {low:.4f}")
+    st.write(f"High: {high:.4f}")
+    st.write(f"Grids: {grids}")
+
+    st.subheader("Score")
+    st.write(sc)
+
+    st.subheader("Reasons")
+    for r in reasons:
+        st.write("•", r)
