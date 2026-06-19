@@ -4,29 +4,50 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🚀 Ultra Smart Coin Analyzer PRO (Single Asset Deep Analysis)")
+st.title("🤖 Adaptive Grid Engine PRO")
 
 session = requests.Session()
 
 # =========================
-# 📊 MARKET DATA
+# 📊 DATA LOADER (Coinbase ONLY)
 # =========================
-@st.cache_data(ttl=60)
-def get_data(symbol):
+@st.cache_data(ttl=120)
+def get_data(symbol, target_candles=1000, granularity=3600):
+
     try:
-        url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/candles?granularity=3600"
-        r = session.get(url, timeout=10).json()
+        url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/candles"
 
-        if not isinstance(r, list) or len(r) < 120:
-            return None
+        all_data = []
+        end = None
 
-        df = pd.DataFrame(r, columns=["time","low","high","open","close","volume"])
+        while len(all_data) < target_candles:
+
+            params = {"granularity": granularity}
+            if end:
+                params["end"] = end
+
+            r = session.get(url, params=params, timeout=10).json()
+
+            if not isinstance(r, list) or len(r) == 0:
+                break
+
+            all_data.extend(r)
+
+            oldest = min(r, key=lambda x: x[0])[0]
+            end = oldest - granularity
+
+            if len(r) < 2:
+                break
+
+        df = pd.DataFrame(all_data, columns=["time","low","high","open","close","volume"])
+
+        df = df.drop_duplicates(subset=["time"])
         df = df.sort_values("time").reset_index(drop=True)
 
-        for col in ["low", "high", "open", "close", "volume"]:
-            df[col] = df[col].astype(float)
+        for col in ["low","high","open","close","volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        return df
+        return df.dropna().tail(target_candles)
 
     except:
         return None
@@ -44,10 +65,7 @@ def add_indicators(df):
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
 
-    avg_gain = pd.Series(gain).ewm(alpha=1/14, adjust=False).mean()
-    avg_loss = pd.Series(loss).ewm(alpha=1/14, adjust=False).mean()
-
-    rs = avg_gain / (avg_loss + 1e-9)
+    rs = pd.Series(gain).ewm(alpha=1/14).mean() / (pd.Series(loss).ewm(alpha=1/14).mean() + 1e-9)
     df["rsi"] = 100 - (100 / (1 + rs))
 
     ema12 = df["close"].ewm(span=12).mean()
@@ -56,21 +74,20 @@ def add_indicators(df):
     df["signal"] = df["macd"].ewm(span=9).mean()
 
     df["vol_ma"] = df["volume"].rolling(20).mean()
-    df["support"] = df["low"].rolling(20).min()
-    df["resistance"] = df["high"].rolling(20).max()
 
-    high_low = df["high"] - df["low"]
-    high_close = abs(df["high"] - df["close"].shift())
-    low_close = abs(df["low"] - df["close"].shift())
+    tr = pd.concat([
+        df["high"] - df["low"],
+        abs(df["high"] - df["close"].shift()),
+        abs(df["low"] - df["close"].shift())
+    ], axis=1).max(axis=1)
 
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["atr"] = tr.rolling(14).mean()
 
     return df.dropna()
 
 
 # =========================
-# 🧠 ANALYSIS ENGINE
+# 🧠 MARKET SCORE
 # =========================
 def analyze(df):
 
@@ -79,146 +96,151 @@ def analyze(df):
     score = 0
     reasons = []
 
-    # RSI
     if latest["rsi"] < 35:
         score += 15
-        reasons.append("RSI منخفض → تشبع بيعي (+15)")
-    else:
-        reasons.append("RSI مش في منطقة شراء (0)")
+        reasons.append("RSI oversold +15")
 
-    # MACD
     if latest["macd"] > latest["signal"]:
         score += 15
-        reasons.append("MACD إيجابي (+15)")
-    else:
-        reasons.append("MACD سلبي (0)")
+        reasons.append("MACD bullish +15")
 
-    # Trend EMA
     if latest["ema50"] > latest["ema200"]:
         score += 15
-        reasons.append("ترند صاعد EMA50 > EMA200 (+15)")
-    else:
-        reasons.append("ترند هابط أو ضعيف (0)")
+        reasons.append("Uptrend +15")
 
-    # Support proximity
-    if latest["close"] <= latest["support"] * 1.02:
-        score += 10
-        reasons.append("السعر قريب من الدعم (+10)")
-    else:
-        reasons.append("بعيد عن الدعم (0)")
-
-    # Volume
     if latest["volume"] > latest["vol_ma"]:
         score += 10
-        reasons.append("حجم تداول قوي (+10)")
-    else:
-        reasons.append("حجم ضعيف (0)")
+        reasons.append("Volume strong +10")
 
-    # ATR strength
-    if latest["atr"] > df["atr"].mean():
-        score += 10
-        reasons.append("تقلب جيد ATR (+10)")
-    else:
-        reasons.append("حركة ضعيفة (0)")
-
-    # Momentum
     if latest["close"] > df["close"].iloc[-5:].mean():
         score += 10
-        reasons.append("زخم صاعد (+10)")
-    else:
-        reasons.append("زخم ضعيف (0)")
+        reasons.append("Momentum up +10")
 
-    # Trend strength
-    if df["close"].iloc[-10:].mean() > df["close"].iloc[-30:-10].mean():
-        score += 5
-        reasons.append("اتجاه قصير المدى صاعد (+5)")
-    else:
-        reasons.append("اتجاه ضعيف (0)")
-
-    signal = (
-        "🔥 قوي جدًا" if score >= 80 else
-        "🟢 فرصة" if score >= 65 else
-        "⚠️ مراقبة" if score >= 50 else
-        "❌ ضعيف"
-    )
-
-    return score, signal, reasons
+    return score, reasons
 
 
 # =========================
-# 🛑 RISK MANAGEMENT
+# 📉 SUPPORT / RESISTANCE (Pivot Style)
 # =========================
-def risk_management(df):
+def detect_levels(df, left=5, right=5):
+
+    highs = df["high"]
+    lows = df["low"]
+
+    support_levels = []
+    resistance_levels = []
+
+    for i in range(left, len(df) - right):
+
+        if lows[i] == min(lows[i-left:i+right+1]):
+            support_levels.append(lows[i])
+
+        if highs[i] == max(highs[i-left:i+right+1]):
+            resistance_levels.append(highs[i])
+
+    support = np.mean(support_levels[-3:]) if support_levels else df["low"].min()
+    resistance = np.mean(resistance_levels[-3:]) if resistance_levels else df["high"].max()
+
+    return support, resistance
+
+
+# =========================
+# 🤖 ADAPTIVE GRID SYSTEM (MAIN ENGINE)
+# =========================
+def grid_engine(df, score):
 
     latest = df.iloc[-1]
-    entry = latest["close"]
+
+    support, resistance = detect_levels(df)
+
     atr = latest["atr"]
-    resistance = latest["resistance"]
+    price = latest["close"]
 
-    sl = entry - (1.5 * atr)
-    risk = entry - sl
+    # 📉 Dynamic range
+    low = support * 0.995
+    high = resistance * 1.005
 
-    tp1 = entry + risk
-    tp2 = entry + (risk * 2)
-    tp3 = max(resistance, tp2)
+    min_range = atr * 6
 
-    return entry, sl, tp1, tp2, tp3
+    if (high - low) < min_range:
+        low = price - atr * 7
+        high = price + atr * 7
+
+    # 📊 volatility
+    volatility = atr / price
+
+    # 🔢 base grids
+    if volatility < 0.02:
+        grids = 18
+    elif volatility < 0.05:
+        grids = 35
+    else:
+        grids = 55
+
+    # 🧠 Adaptive adjustment (CORE FEATURE)
+    if score >= 75:
+        grids += 10
+    elif score < 50:
+        grids -= 10
+
+    grids = max(10, min(80, grids))
+
+    return low, high, int(grids)
 
 
 # =========================
-# 🚀 UI INPUT
+# 🧠 GRID DECISION LAYER
 # =========================
-coin = st.text_input("🔎 اكتب اسم العملة (مثال: BTC, ETH, SOL)")
+def grid_decision(score):
 
-if st.button("🚀 Analyze Coin") and coin:
+    if score >= 75:
+        return "STRONG_GRID"
+    elif score >= 60:
+        return "NORMAL_GRID"
+    elif score >= 50:
+        return "REDUCED_GRID"
+    else:
+        return "NO_GRID"
 
-    df = get_data(coin.upper())
 
-    if df is None:
-        st.error("❌ مفيش بيانات للعملة دي")
+# =========================
+# 🚀 UI
+# =========================
+coin = st.text_input("🔎 Enter Coin (BTC, ETH, SOL...)")
+
+if st.button("Analyze") and coin:
+
+    df = get_data(coin.upper(), 1000)
+
+    if df is None or df.empty:
+        st.error("No data")
         st.stop()
 
     df = add_indicators(df)
 
-    score, signal, reasons = analyze(df)
-    entry, sl, tp1, tp2, tp3 = risk_management(df)
+    score, reasons = analyze(df)
+    decision = grid_decision(score)
+
+    if decision == "NO_GRID":
+        st.error("⚠️ Market not suitable for Grid")
+        st.stop()
+
+    low, high, grids = grid_engine(df, score)
 
     latest = df.iloc[-1]
 
     # =========================
-    # 📊 SUMMARY TABLE
-    # =========================
-    st.subheader("📊 Market Data")
-    st.dataframe(pd.DataFrame({
-        "Price": [latest["close"]],
-        "RSI": [latest["rsi"]],
-        "MACD": [latest["macd"]],
-        "Signal": [latest["signal"]],
-        "EMA50": [latest["ema50"]],
-        "EMA200": [latest["ema200"]],
-        "ATR": [latest["atr"]],
-        "Support": [latest["support"]],
-        "Resistance": [latest["resistance"]],
-        "Volume": [latest["volume"]],
-    }), use_container_width=True)
+    st.subheader("📊 Market Score")
+    st.write(score)
+    st.write(decision)
 
     # =========================
-    # 🎯 RESULTS TABLE
-    # =========================
-    st.subheader("🎯 Trading Plan")
-    st.dataframe(pd.DataFrame({
-        "Entry": [entry],
-        "Stop Loss": [sl],
-        "TP1": [tp1],
-        "TP2": [tp2],
-        "TP3": [tp3],
-        "Score": [score],
-        "Signal": [signal],
-    }), use_container_width=True)
+    st.subheader("🤖 Adaptive Grid Output")
+    st.write(f"📉 Low: {low:.6f}")
+    st.write(f"📈 High: {high:.6f}")
+    st.write(f"🔢 Grids: {grids}")
 
     # =========================
-    # 🧠 REASONS
-    # =========================
-    st.subheader("🧠 Why this score?")
+    st.subheader("🧠 Reasons")
     for r in reasons:
         st.write("•", r)
